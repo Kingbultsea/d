@@ -1,0 +1,823 @@
+const sendTouser = require('./sendTouser')
+const db = require('./DataBase')
+const request = require('request')
+const fs = require('fs')
+const path = require("path")
+const { sleepStationPic } = require('./parseImg')
+
+const myLink = `<a class="weapp_text_link" style="font-size:17px;" data-miniprogram-appid="wxf9e01cdca4779ccb" data-miniprogram-path="pages/welcome/welcome" data-miniprogram-nickname="小睡眠" href="" data-miniprogram-type="text" data-miniprogram-servicetype="">小睡眠</a>`
+
+class SleepStation {
+    constructor ({nickName, picUrl, openId, unionId, platFormId, serveAccessToken, sex}) {
+        this.nick_name = nickName
+        this.pic_url = picUrl // 这是头像的 而不是用户所上传的图片哦
+        this.open_id = openId
+        this.unionid = unionId
+        this.sex = sex == 0 ? 1 : sex
+
+
+        this.platform_id = platFormId
+
+        this._oppsiteName = 'hodor1'
+        this._oppsiteUnionId = 'hodor message'
+
+        this.token = serveAccessToken
+        this.key = '纳睡'
+    }
+
+    async logicCall ({content, contentType, mediaId = 123}) {
+        if (!this.unionid) {
+            console.log('没有Unionid')
+            return
+        }
+
+        if ('My house is tumble New house electrial house' === content) {
+            await sendTouser.sendMessage(this.open_id, `My house is tumble
+New house electrial house
+高峰期的街上 堆满车子
+长长的一队 堵塞Max
+`, this.token)
+            db.delete('wxbaf03b7acb3c993a_sleep_station', {
+                unionid: this.unionid
+            })
+            db.delete('wxbaf03b7acb3c993a_sleep_station', {
+                exchange_unionid: this.unionid
+            })
+            return
+        }
+
+        if (content.indexOf('收到不支持的消息类型，暂无法显示') === 0) {
+            return
+        }
+
+        const dataGetbusy = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+        if (dataGetbusy.length > 0) {
+            if (dataGetbusy[0].busy == 'true') {
+                console.log('用户还在匹配中 直接返回 不执行任何代码')
+                return
+            }
+
+            if ( (parseInt(dataGetbusy[0].update) <= new Date().getTime() - 10800000) && dataGetbusy[0].exchange_unionid === 'none') {
+                if (dataGetbusy[0].step == 0) {
+                    return
+                }
+                this.updateStep(0)
+                this.overTime()
+                return
+            }
+
+        }
+
+        /* await this.setUserBusyState('true')
+        setTimeout(() => {
+            this.setUserBusyState('false')
+            console.log('用户频繁输入！')
+            sendTouser.sendMessage(this.open_id, `不要频繁输入哦~`, this.token)
+            return
+        }, ) */
+
+        const step = await this.getStep()
+
+        switch (parseInt(step)) {
+            case 0: {
+                console.log('a' + this.key +  contentType + content )
+                console.log(this.key !== content)
+                console.log(contentType)
+                console.log(contentType !== 'text')
+                if (this.key !== content || contentType !== 'text') {
+                    return
+                }
+                if (this.sex == 0) { // 不知道是男女
+                    sendTouser.sendMessage(this.open_id, `请输入你的性别，回复'1'代表男生，回复'2'代表女生`)
+                    this.updateStep(7)
+                    return
+                }
+
+                await this.addUser()
+                await this.start()
+                await sendTouser.sendMessage(this.open_id, `请发送你一段关于睡眠的语音故事给我们，我们尽快完成交换匹配\r\n\r\n👉注意交换次数只有一次，请认真对待`, this.token)
+                this.updateStep(1)
+            }
+                break;
+            case 1: {
+                if (contentType !== 'voice') {
+                    this.textErr('voice')
+                    return
+                }
+                this.saveVoiceMediaId(mediaId) // 直接保存 因为会取不到那个id的
+                this.textVerifySubmit('common')
+                this.updateStep(2)
+                    }
+                break;
+            case 2: {
+                if (!this.verifyNumber(content, contentType)) {
+                    return
+                }
+                if (content == 2) {
+                    this.updateStep(1) // 回到语音输入 重新输入
+                    this.changeMind()
+                }
+                if (content == 1) {
+                    sendTouser.sendMessage(this.open_id, `是否有关于这段故事的配图？\r\n\r\n有：请直接发图片给我\r\n没有请输入： "没有图片"`, this.token)
+                    this.updateStep(3)
+                }
+            }
+                break;
+            case 3: {
+                if (content.indexOf('没有') == 0) {
+                    await sendTouser.sendMessage(this.open_id, `我们正在为你匹配 请稍等哦`, this.token)
+                    console.log('用户没有图片')
+                    this.exchangeSuccess()
+                    this.updateStep(5)
+                    return
+                }
+                if (contentType !== 'image') {
+                    this.textErr('picture')
+                    return
+                }
+                this.textVerifySubmit('picture')
+                this.savePicMediaId(mediaId)
+                this.updateStep(4)
+            }
+                break;
+            case 4: {
+                if (!this.verifyNumber(content, contentType)) {
+                    console.log('?? 我觉得是发了两个东西给我吧？？？')
+                    return
+                }
+                if (content == 1) {
+                    await sendTouser.sendMessage(this.open_id, `我们正在为你匹配 请稍等哦`, this.token)
+                    await this.exchangeSuccess()
+                    this.updateStep(5)
+                }
+                if (content == 2) {
+                    this.changeMind()
+                    this.updateStep(3)
+                }
+            }
+                break;
+            case 5: {
+                if (content === '举报') {
+                    console.log('触发用户举报机制')
+                    sendTouser.sendMessage(this.open_id, `已收到你的举报，给你带来糟糕的心情真的很不好意思`, this.token)
+                    this.end()
+                    db.update('wxbaf03b7acb3c993a_sleep_station', {
+                        step: '999'
+                    }, {
+                        where: {
+                            unionid: this.unionid
+                        }
+                    })
+                    return
+                }
+
+                if (contentType !== 'text') {
+                    this.textErr('text')
+                    return
+                }
+                await sendTouser.sendMessage(this.open_id, `请耐心等待哦`, this.token)
+                await this.exchangeMessage('exchange_message_one', content)
+            }
+                break;
+            case 6: { // 这一步是 未知 所以是男女赋值
+
+            }
+                break;
+            case 7: {
+                if (!this.verifyNumber(content, contentType)) {
+                    this.textErr('number')
+                    return
+                }
+                this.updateStep(0)
+            }
+                break;
+            case 8: {
+                if (contentType !== 'text') {
+                    this.textErr('text')
+                    return
+                }
+                await sendTouser.sendMessage(this.open_id, `请耐心等待哦`, this.token)
+                await this.exchangeMessage('exchange_message_two', content)
+            }
+                break;
+            case 999: {
+                /* await sendTouser.sendMessage(this.open_id, `林鑫重新输入入职 就可以重新玩了`, this.token)
+                db.delete('wxbaf03b7acb3c993a_sleep_station', {
+                    unionid: this.unionid
+                }) */
+
+            }
+                break;
+        }
+
+    }
+
+    async start () {
+        let data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        const dataPlatForm = await db.select('wxbaf03b7acb3c993a_appid_platform', {
+            where: {
+                appid: data[0].platform_id
+            }
+        })
+
+        if (dataPlatForm[0] && dataPlatForm[0].qrcode_url) {
+            this.QRblockUrl = dataPlatForm[0].qrcode_url
+        }
+
+        const initContent = `嘿，${this.nick_name}，我们一起来拯救失眠的世界吧\r\n` +
+            `这里是 ${myLink} 用无数个失眠的夜晚联合打造的 晚安睡务局\r\n\r\n` + // `这里是 ${myLink} x ${dataPlatForm[0].name} 用无数个失眠的夜晚联合打造的 晚安睡务局\r\n\r\n` +
+            `睡前，你的大脑会有怎么样的狂想曲？
+还是会有一个迷迷糊糊的梦？
+亦或者非常期待今晚能有人和你分享或开心或不开心的事情
+或者今天过得稍微有点无趣，但还是想用一段语音，来告别今天努力的自己\r\n
+不管怎样，现在按下语音键，录下你的晚安，跟另一个人交换吧`
+        await sendTouser.sendMessage(this.open_id, initContent, this.token)
+    }
+
+    changeMind () {
+        sendTouser.sendMessage(this.open_id, `来吧，大胆修改你的想法吧`, this.token)
+    }
+
+    verifyNumber (content, contentType) {
+        console.log(content, contentType)
+        if (contentType !== 'text' || (parseInt(content) != 1 && parseInt(content) != 2)) {
+            this.textErr('number')
+            return false
+        }
+        return true
+    }
+
+    textErr (type) {
+        switch (true) {
+            case (type === 'voice'): sendTouser.sendMessage(this.open_id, `请回复语音，否则将无法继续`, this.token)
+                break;
+            case (type === 'number'): sendTouser.sendMessage(this.open_id, `请输入数字‘1’ 重新输入回复 ‘2’`, this.token)
+                break;
+            case (type === 'picture'): sendTouser.sendMessage(this.open_id, `请回复图片，否则将无法继续。`, this.token)
+                break;
+            case (type === 'text'): sendTouser.sendMessage(this.open_id, `请回复文字，我相信你只是手抖。`, this.token)
+                break;
+        }
+    }
+
+    textVerifySubmit (type = 'common') {
+        switch (true) {
+            case (type === 'common'): sendTouser.sendMessage(this.open_id, `是否确认发送该内容\r\n\r\n确认回复“1”，重新输入回复“2”`, this.token)
+                break;
+            case (type === 'picture'): sendTouser.sendMessage(this.open_id, `是否确认发送这张图片\r\n\r\n确认回复“1”，重新输入回复“2”`, this.token)
+                break;
+        }
+    }
+
+    overTime () {
+        sendTouser.sendMessage(this.open_id, `由于你的操作超时，现已结束你的交换流程，请重新输入${this.key}，以重新进行匹配。\r\n\r\n更多活动详情请关注\r\n${myLink}`, this.token)
+    }
+
+    async addUser () {
+        const data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+        if (data.length !== 0) {
+            return 'fail'
+        }
+        await db.insert('wxbaf03b7acb3c993a_sleep_station', {
+            unionid: this.unionid,
+            nick_name: this.nick_name,
+            sex: this.sex,
+            exchange_unionid: 'none',
+            exchange_message_one: 'none',
+            exchange_message_two: 'none',
+            pic_url: 'none',
+            update: new Date().getTime(),
+            platform_id: this.platform_id,
+            busy: 'false',
+            no_voice: this.open_id
+        })
+        return 'success'
+    }
+
+    updateUserTimeStamp () {
+        db.update('wxbaf03b7acb3c993a_sleep_station', {
+            update: new Date().getTime()
+        })
+    }
+
+    updateStep (count) {
+        if (count == 999) {
+            db.update('wxbaf03b7acb3c993a_sleep_station', {
+                step: count,
+                busy: false
+            }, {
+                where: {
+                    unionid: this.unionid
+                }
+            })
+        } else {
+            db.update('wxbaf03b7acb3c993a_sleep_station', {
+                step: count
+            }, {
+                where: {
+                    unionid: this.unionid
+                }
+            })
+        }
+    }
+
+    async getStep () {
+        const data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        return data.length === 0 ? 0 : data[0].step
+    }
+
+    savePicMediaId (mediaId) {
+        console.log('用户要添加图片了' + mediaId)
+        sendTouser.saveMediaResource(mediaId, this.unionid, this.token, '.jpeg')
+        db.update('wxbaf03b7acb3c993a_sleep_station', {
+            pic_mediaid: mediaId
+        }, {
+            where: {
+                unionid: this.unionid
+            }
+        })
+    }
+
+    saveVoiceMediaId (mediaId) {
+        console.log('用户要添加声音了' + mediaId)
+        sendTouser.saveMediaResource(mediaId, this.unionid, this.token, '.mp3')
+        db.update('wxbaf03b7acb3c993a_sleep_station', {
+            voice_mediaid: mediaId
+        }, {
+            where: {
+                unionid: this.unionid
+            }
+        })
+    }
+
+    async selectUser (time, sex) { // 没有用户的时候的规则处理
+        let insertSex = undefined
+        console.log(time + ' count times 5 ')
+        if (time >= 12 * 3 && time < 12 * 3 * 2) {
+            insertSex = randomNum(1,2)
+        }
+
+        if (time === 12 * 3 * 2) { // 12 * 3 * 2
+            db.update('wxbaf03b7acb3c993a_sleep_station', {
+                exchange_unionid: 'robot',
+                step: '999'
+            }, {
+                where: {
+                    unionid: this.unionid
+                }
+            })
+
+            console.log('找不到用户 我们使用机器人吧')
+            this.token = await refleashSelfAccessToken(this.platform_id)
+            const sex = 2// this.sex === 1 ? 2 : 1 默认是2了
+
+            let files = fs.readdirSync(path.join(__dirname, `../robot/${sex}`))
+            let maxCount = 0
+            files.forEach((val,index) => {
+                maxCount += 1
+                console.log(val)
+                console.log(index)
+                console.log('?' + index)
+            })
+            console.log(maxCount)
+            const getRobotName = JSON.parse(fs.readFileSync(path.join(__dirname, '../robotName.json')))
+            const rN = randomNum(1, (maxCount - 1) / 2)
+            console.log(getRobotName[rN])
+            await sendTouser.sendMessage(this.open_id, `来自 ${myLink} 的 @${getRobotName[rN]}\r\n与你交换了一段语音和图片`, this.token)
+            await sendRawMediaData(this.open_id, this.token, 'image', 2, rN)
+            await sendRawMediaData(this.open_id, this.token, 'voice', 2, rN)
+            setTimeout(() => {
+                sendTouser.sendMessage(this.open_id, `你有两次机会给@${getRobotName[rN]}留言机会，请发送【文字消息】，对方将会收到\r\n(请在15分钟之内留言)`, this.token)
+            }, 5000)
+            setTimeout(async () => {
+                this.token = await refleashSelfAccessToken(this.platform_id)
+                await sendTouser.sendMessage(this.open_id, `你的匹配对象已离开`, this.token)
+                this.end()
+            }, 60 * 1000 * 5) // 60 * 1000 * 5
+            return
+        }
+
+
+
+
+        this.exchangeSuccess( time + 1, insertSex )
+
+
+    }
+
+    async exchangeSuccess (time = 1, sex = this.sex === 1 ? 2 : 1) {
+        await db.update('wxbaf03b7acb3c993a_sleep_station', {
+            busy: 'true'
+        }, {
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        let data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                exchange_unionid: 'none',
+                sex,
+                step: 5
+            },
+            orders: [['update', 'desc']]
+        })
+
+
+
+        const data3 = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                exchange_unionid: this.unionid
+            }
+        })
+        console.log(sex + '男女 1 2')
+        if (data3.length > 0) {
+            data[0] = data3[0]
+        }
+
+        if (data.length === 0) {
+            setTimeout(() => {
+                this.selectUser(time, sex)
+            }, 5 * 1000)
+            return
+        }
+
+        if (data[0].unionid === this.unionid) {
+            console.log('匹配到自己了')
+            if (data.length < 2) {
+                console.log('糟糕 找不到人')
+                setTimeout(() => {
+                    this.selectUser(time, sex)
+                }, 5 * 1000)
+                return
+            }
+            data[0] = data[1]
+        }
+
+
+
+        await db.update('wxbaf03b7acb3c993a_sleep_station', {
+            // exchange_unionid: data[0].unionid,
+            busy: 'false'
+        },{
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        if (data3.length === 0) { // 没有 没有的时候去改对方的东西就好了
+            await db.update('wxbaf03b7acb3c993a_sleep_station', {
+                exchange_unionid: this.unionid
+            },{
+                where: {
+                    unionid: data[0].unionid
+                }
+            }) // update对方的exchange_unionid
+
+            // 我觉得这里 两个人都去update对方的时候
+            const cusor = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+                where: {
+                    unionid: data[0].unionid
+                }
+            })
+
+            if (cusor[0].exchange_unionid !== this.unionid) {
+                console.log('匹配的时候冲突 重新匹配')
+
+                this.exchangeSuccess(time, sex === 1 ? 2 : 1)
+                return
+            }
+
+
+            await db.update('wxbaf03b7acb3c993a_sleep_station', { // 我觉得是有的话 就修改自己的exchange_id 这样就足够了啊
+                exchange_unionid: data[0].unionid
+            },{
+                where: {
+                    unionid: this.unionid
+                }
+            })
+        } else {
+
+        }
+
+        db.update('wxbaf03b7acb3c993a_sleep_station', {
+            busy: 'false'
+        },{
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+
+        const dataPlatForm = await db.select('wxbaf03b7acb3c993a_appid_platform', {
+            where: {
+                appid: data[0].platform_id
+            }
+        })
+        console.log('为用户找到匹配！' + data[0].nick_name)
+        this._oppsiteName = data[0].nick_name
+        this._oppsiteUnionId = data[0].unionid
+
+        await sendTouser.sendMessage(this.open_id, `来自 ${dataPlatForm[0].name} 的 @${data[0].nick_name}\r\n与你交换了一段语音和图片`, this.token)
+
+        /* if (this.platform_id !== data[0].appid) {
+
+        } else {
+            console.log('同平台发送')
+            if (data[0].pic_mediaid) {
+                await sendTouser.sendMediaContent(this.open_id, data[0].pic_mediaid, this.token, 'image')
+            }
+            await sendTouser.sendMediaContent(this.open_id, data[0].voice_mediaid, this.token, 'voice')
+        }
+        console.log('不同平台的发送') */
+
+        if (data[0].pic_mediaid) {
+            await sendMediaData(this.open_id, this.token, 'image', data[0].unionid)
+        }
+        await sendMediaData(this.open_id, this.token, 'voice', data[0].unionid)
+
+        await sendTouser.sendMessage(this.open_id, `（提示：如果对方的交换含有让你不悦的内容，或没有按规则参加，可回复“举报”）`, this.token)
+        await sendTouser.sendMessage(this.open_id, `你有两次机会给@${this._oppsiteName}留言机会，请发送消息，对方将会收到\r\n\r\n🐳\r\n\r\n发到这里，对方将会立刻收到\r\n\r\n[月亮](15分钟内留言有效)`, this.token)
+
+        // 匹配成功之后 就可以进入新的计时器了
+        setTimeout(async () => {
+            this.token = await refleashSelfAccessToken(this.platform_id)
+            const dataGetbusy = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+                where: {
+                    unionid: this.unionid
+                }
+            })
+            if ( dataGetbusy[0].exchange_message_one === 'none' && parseInt(dataPlatForm[0].step) !== 999) { // 匹配完成后 你的第一条留言还是none 那么我们就T你出局
+                this.updateStep(999)
+                await sendTouser.sendMessage(this.open_id, `你的匹配对象已离开`, this.token)
+                this.end()
+                return
+            }
+        }, 1000 * 60 * 15)
+
+
+    }
+
+    async exchangeMessage (messageSite, content) {
+        // 更新本地的exchange_message 信息
+        await db.update('wxbaf03b7acb3c993a_sleep_station', {
+            [messageSite]: content,
+            busy: 'true'
+        }, {
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        const mydata = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+        const data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: mydata[0].exchange_unionid
+            }
+        })
+        const platFormData = await db.select('wxbaf03b7acb3c993a_appid_platform', {
+            where: {
+                appid: data[0].platform_id
+            }
+        })
+
+        sendTouser.sendMessage(data[0].no_voice, `@${mydata[0].nick_name} 收到你的信息后，给你留了一段话\r\n\r\n${content}`, platFormData[0].authorization_access_token)
+        this.getTheirMessage(messageSite, 1, content)
+    }
+
+    async getTheirMessage (messageSite, times = 1, content) {
+        const mydata = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        const data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: mydata[0].exchange_unionid
+            }
+        })
+
+        // 2019.1.30 为对方立刻发送留言
+        // this.sendMessageImmediately(data[0].no_voice, content)
+
+        /* if (mydata[0].busy === 'true') {
+            return
+        } */
+
+        if (data[0][messageSite] === 'none') {
+            console.log('对方没有给你留言哦')
+            if (times >= 12 * 3 * 5) { // 15分钟刷新一次机制
+                sendTouser.sendMessage(this.open_id, `你的匹配对象已离开`, this.token)
+                this.end()
+                this.updateStep(999)
+                return
+            }
+            setTimeout(() => {
+                this.getTheirMessage(messageSite, times + 1)
+            }, 1000 * 5) // 3分钟询问
+            return
+        } else {
+            // 2019.1.30 修改为interval xia
+            // await sendTouser.sendMessage(this.open_id, `@${data[0].nick_name} 收到你的文字后，给你留了一段话\r\n\r\n${data[0][messageSite]}`, this.token)
+            db.update('wxbaf03b7acb3c993a_sleep_station', {
+                busy: false
+            }, {
+                where: {
+                    unionid: this.unionid
+                }
+            })
+            if (messageSite === 'exchange_message_one') {
+                sendTouser.sendMessage(this.open_id, `这是你最后一次留言机会，请认真回复。\r\n\r\n如果你觉得对方是个有趣的人，不妨留下你的微信
+或者你想最后告诉他，关于这段故事，你有什么看法`, this.token)
+                // 匹配成功之后 就可以进入新的计时器了
+                setTimeout(async () => {
+                    const dataGetbusy = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+                        where: {
+                            unionid: this.unionid
+                        }
+                    })
+                    if ( dataGetbusy[0].exchange_message_two === 'none' ) { // 你还没有发出第二条的时候 也会T你出局
+                        this.token = await refleashSelfAccessToken(this.platform_id)
+                        console.log(`${dataGetbusy[0].busy} 看看busy`)
+                        console.log(`${dataGetbusy[0].unionid} 看看unionid`)
+                        console.log(`${dataGetbusy[0].step} 看看step`)
+                        this.updateStep(999)
+                        console.log('用户超时操作')
+                        await sendTouser.sendMessage(this.open_id, `你的匹配对象已离开`, this.token)
+                        this.end()
+                        return
+                    }
+                }, 1000 * 60 * 15)
+                this.updateStep(8)
+            } else {
+                this.end()
+                this.updateStep(999)
+            }
+            return
+        }
+    }
+
+    sendMessageImmediately (oppsiteOpenId, message) {
+        console.log('立刻交换信息' + oppsiteOpenId + message)
+        sendTouser.sendMessage(oppsiteOpenId, message, this.token)
+    }
+
+    async end () {
+        const data = await db.select('wxbaf03b7acb3c993a_sleep_station', {
+            where: {
+                unionid: this.unionid
+            }
+        })
+
+        // await sendTouser.getMediaPic('描述', this.token, this.open_id, null, this.platform_id, 3, this.nick_name, this.pic_url) // 图片
+        // await sendTouser.sendMessage(this.open_id, `交换结束，职位申请成功，感谢你今晚的相伴\r\n\r\n恭喜你已获得 <a href='http://mp.weixin.qq.com/s?__biz=MzI2MTQzMjAwMA==&mid=100001424&idx=1&sn=b4150dfa72d5765e9907ff02989fe85b&chksm=6a5b313f5d2cb829cd5c5fe7b410a2cc7e64ddfae8a11b4cc667c1dfb2ce9f9274d9265a7d57#rd'>晚安睡务局</a> 认证的睡务员一职，你的编号是${data[0].id}\r\n感谢参与本次活动，在下个星期，我们将会公布睡务员的具体任务，请妥善保存`, this.token)
+        await sendTouser.sendMessage(this.open_id, `交换活动结束，感谢你精心分享的故事和今晚的相伴
+
+感谢参与本次活动，你的晚安睡前故事将会被收录进\r\n\r\n <a  class="weapp_text_link" style="font-size:17px;" data-miniprogram-appid="wxf9e01cdca4779ccb" data-miniprogram-path="pages/welcome/welcome" data-miniprogram-nickname="小睡眠" href="" data-miniprogram-type="text" data-miniprogram-servicetype=""'>小睡眠·晚安睡务局</a>
+
+愿你今晚做个好梦。`, this.token)
+
+        /* fs.exists(path.join(path.join(__dirname, '../tz/123' +'.png'), (exists) => {
+            if (exists) {
+                sendTouser.sendMessage(this.open_id, ':) yep', this.token)
+            } else {
+                sendTouser.sendMessage(this.open_id, ':) ye p', this.token)
+            }
+        }))
+
+        const a = await sleepStationPic(this.nick_name, this.QRblockUrl, (desc) => {
+            sendTouser.sendMessage(this.open_id, desc, this.token)
+        }) */
+            // sendMediaData(this.open_id, this.token, 'png', 'hodor')
+
+        /* const dataPlatForm = await db.select('wxbaf03b7acb3c993a_appid_platform', {
+            where: {
+                appid: this.platform_id
+            }
+        }) */
+
+        const a = await sleepStationPic(this.nick_name, 'http://mmbiz.qpic.cn/mmbiz_jpg/wib5vLMkeLaPiaHQVFZQrUNBVDoEPsQOicrTnR7piczDWbuSlYIfIow1hTibIvMszfeQAmk0KWa66aHEWtqqAOheexA/0', ('' + data[0].id).padStart(6, 0), this.platform_id)
+
+        sendMediaDataCopy(this.open_id, this.token, 'image', a)
+        // await sendRawMediaData(this.open_id, this.token, 'image', 2, 2)
+        // sendTouser.sendMessage(this.open_id, `次活动将在明天晚上12点结束，希望你能帮忙把职务卡分享到朋友圈中，以便我们更快地找到合适的睡务员，一起去干掉失眠带来的焦虑、不安与孤独`, this.token)
+    }
+
+    async robotSendData () {
+        await sendMediaData(this.open_id, this.token, 'image', data[0].unionid)
+    }
+
+}
+
+
+function randomNum (minNum, maxNum) {
+    switch (arguments.length) {
+        case 1:
+            return parseInt(Math.random() * minNum + 1, 10)
+        case 2:
+            return parseInt(Math.random() * (maxNum - minNum + 1) + minNum, 10)
+        default:
+            return 0
+    }
+}
+
+async function sendMediaData (openid, token, type = 'iamge', hashPicName) { // 465
+    return new Promise((resolve) => {
+        let formData = {
+            my_field: 'my_value',
+            my_file:  fs.createReadStream(path.join(__dirname, `../userExchangeSleepStation/${hashPicName}.${type == 'image' ? 'jpeg' : 'mp3' }`))
+        }
+        request.post({url:`https://api.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, formData: formData}, async function(err, httpResponse, body) {
+            if (err) {
+                return console.error('upload failed:', err)
+            }
+            console.log(body)
+            console.log('上传成功')
+            await sendTouser.sendMediaContent(openid, JSON.parse(body).media_id, token, type)
+            resolve()
+        })
+    })
+}
+
+async function sendMediaDataCopy (openid, token, type = 'iamge', hashPicName) { // 465
+    return new Promise((resolve) => {
+        let formData = {
+            my_field: 'my_value',
+            my_file:  fs.createReadStream(path.join(__dirname, `../tz/${hashPicName}.png`))
+        }
+        request.post({url:`https://api.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, formData: formData}, async function(err, httpResponse, body) {
+            if (err) {
+                return console.error('upload failed:', err)
+            }
+            console.log(body)
+            console.log('上传成功')
+            await sendTouser.sendMediaContent(openid, JSON.parse(body).media_id, token, type)
+            resolve()
+        })
+    })
+}
+
+async function sendRawMediaData (openid, token, type = 'iamge', sex, hashPicName) { // 含有Path的
+    return new Promise((resolve) => {
+        let formData = {
+            my_field: 'my_value',
+            my_file:  fs.createReadStream(path.join(__dirname, `../robot/${sex}/${hashPicName}.${type == 'image' ? 'jpg' : 'mp3' }`))
+        }
+        request.post({url:`https://api.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, formData: formData}, async function(err, httpResponse, body) {
+            if (err) {
+                return console.error('upload failed:', err)
+            }
+            console.log('上传成功')
+            console.log(body)
+            await sendTouser.sendMediaContent(openid, JSON.parse(body).media_id, token, type)
+            resolve()
+        })
+    })
+}
+
+function randomNum (minNum, maxNum) {
+    switch (arguments.length) {
+        case 1:
+            return parseInt(Math.random() * minNum + 1, 10)
+        case 2:
+            return parseInt(Math.random() * (maxNum - minNum + 1) + minNum, 10)
+        default:
+            return 0
+    }
+}
+
+async function refleashSelfAccessToken (platFormId) { // 15分钟等场景 可能会出现的问题 所以还是刷新下Token了
+    const data = await db.select('wxbaf03b7acb3c993a_appid_platform', {
+        where: {
+            appid: platFormId
+        }
+    })
+    return data[0].authorization_access_token
+}
+
+module.exports = SleepStation
+// wxbaf03b7acb3c993a_sleep_station
+// unionid  exchange_unionid exchange_message_one exchange_message_two  nick_name sex update id(记录玩的先后顺序) platform_id  step(记录玩的步骤 简称步数记录吧 默认是0)

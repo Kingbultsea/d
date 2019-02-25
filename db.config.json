@@ -1,0 +1,16 @@
+{
+  "heartide_wop": {
+    "host": "rm-wz9xco3r8824m246wo.mysql.rds.aliyuncs.com",
+    "port": "3306",
+    "user": "wangjianhai",
+    "password": "K^3JNbMp#jYAJHVrLGRnfyN9UZ",
+    "database": "heartide_wop"
+  },
+  "cosleep_mp": {
+    "host": "rm-wz9xco3r8824m246wo.mysql.rds.aliyuncs.com",
+    "port": "3306",
+    "user": "wangjianhai",
+    "password": "K^3JNbMp#jYAJHVrLGRnfyN9UZ",
+    "database": "cosleep_mp"
+  }
+}
